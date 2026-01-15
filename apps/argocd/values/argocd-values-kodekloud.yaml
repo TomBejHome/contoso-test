@@ -1,0 +1,331 @@
+crds:
+  install: true
+  keep: true
+
+global:
+  image:
+    tag: "v3.1.0"
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    seccompProfile:
+      type: RuntimeDefault
+  networkPolicy:
+    create: true
+    defaultDenyIngress: false
+controller:
+  name: application-controller
+  replicas: 1
+  enableStatefulSet: true
+  # Workload Identity settings
+  # serviceAccount:
+  #   annotations:
+  #     azure.workload.identity/client-id: ""
+  #     azure.workload.identity/tenant-id: ""
+  #     azure.workload.identity/use: "true"
+  # podLabels:
+  #   azure.workload.identity/use: "true"
+  # security / resources
+  resources:
+    limits: {cpu: 1000m, memory: 2Gi}
+    requests: {cpu: 200m, memory: 512Mi}
+  containerSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: {drop: ["ALL"]}
+  metrics:
+    enabled: true
+    service:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8082"
+  env:
+    - name: PATH
+      value: "/custom-tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  # initContainers:
+  #   - name: download-tools
+  #     image: alpine:3.20
+  #     command: [sh, -c]
+  #     args:
+  #       - |
+  #         wget -qO /custom-tools/kubelogin.zip https://github.com/Azure/kubelogin/releases/download/v0.0.33/kubelogin-linux-amd64.zip &&
+  #         mkdir /custom-tools/tmp && unzip -d /custom-tools/tmp /custom-tools/kubelogin.zip &&
+  #         mv /custom-tools/tmp/bin/linux_amd64/kubelogin /custom-tools/ && rm -rf /custom-tools/tmp && rm /custom-tools/kubelogin.zip
+  #     securityContext:
+  #       runAsNonRoot: true
+  #       runAsUser: 999
+  #       allowPrivilegeEscalation: false
+  #       readOnlyRootFilesystem: false
+  #       capabilities:
+  #         drop: ["ALL"]
+  #     volumeMounts:
+  #       - mountPath: /custom-tools
+  #         name: custom-tools
+  # volumes:
+  #   - name: custom-tools
+  #     emptyDir: {}
+  # volumeMounts:
+  #   - mountPath: /custom-tools
+  #     name: custom-tools
+  pdb:
+    enabled: true
+    minAvailable: 1
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: argocd-application-controller
+            topologyKey: kubernetes.io/hostname
+# ---------------- Server (API/UI) ----------------
+server:
+  name: server
+  replicas: 1
+  
+  serviceAccount:
+    create: false
+    name: argocd-application-controller
+  
+  # podLabels:
+  #   azure.workload.identity/use: "true"
+  
+  resources:
+    limits: {cpu: 1000m, memory: 2Gi}
+    requests: {cpu: 200m, memory: 512Mi}
+  containerSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: {drop: ["ALL"]}
+  autoscaling:
+    enabled: false
+    #minReplicas: 2
+    #maxReplicas: 5
+    #targetCPUUtilizationPercentage: 70
+    #targetMemoryUtilizationPercentage: 80
+  metrics:
+    enabled: true
+    service:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8083"
+  # ArgoCD Server configuration
+  config:
+    # url: https://argo.example.nip.io
+    application.instanceLabelKey: argocd.argoproj.io/instance
+    # Repository credentials template
+    repositories: |
+      - type: helm
+        url: https://argoproj.github.io/argo-helm
+        name: argo
+      - type: helm
+        url: https://charts.jetstack.io
+        name: jetstack
+      - type: helm
+        url: https://traefik.github.io/charts
+        name: traefik
+      - type: helm
+        url: https://cilium.github.io/charts
+        name: cilium
+    resource.exclusions: |
+      - apiGroups:
+        - cilium.io
+        kinds:
+        - CiliumIdentity
+        clusters:
+        - "*"
+
+  extraArgs:
+    - --insecure # Disable TLS requirement for test environments
+
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    hosts: 
+      #- argocd.40.86.186.46.nip.io
+    paths:
+      - path: /
+        pathType: Prefix
+    #tls:
+    #  - secretName: argocd-server-tls
+    #    hosts: [argocd.40.112.238.5.nip.io]
+  
+  service:
+    type: ClusterIP
+    #type: LoadBalancer
+    port: 443
+    targetPort: 8080
+    annotations: {}
+
+  
+  # initContainers:
+
+  # volumes:
+  #   - name: custom-tools
+  #     emptyDir: {}
+  # volumeMounts:
+  #   - mountPath: /custom-tools
+  #     name: custom-tools
+  env:
+    - name: PATH
+      value: "/custom-tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+  pdb:
+    enabled: true
+    minAvailable: 1
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: argocd-server
+            topologyKey: kubernetes.io/hostname
+
+# ---------------- Repo Server ----------------
+repoServer:
+  name: repo-server
+  replicas: 1
+  resources:
+    limits: {cpu: 1000m, memory: 2Gi}
+    requests: {cpu: 150m, memory: 256Mi}
+  containerSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: {drop: ["ALL"]}
+  autoscaling:
+    enabled: false
+  metrics:
+    enabled: true
+    service:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8084"
+  pdb:
+    enabled: true
+    minAvailable: 1
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: argocd-repo-server
+            topologyKey: kubernetes.io/hostname
+
+# ---------------- ApplicationSet Controller ----------------
+applicationSet:
+  enabled: true
+  name: applicationset-controller
+  replicas: 1
+  resources:
+    limits: {cpu: 500m, memory: 1Gi}
+    requests: {cpu: 50m, memory: 128Mi}
+  containerSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: {drop: ["ALL"]}
+  metrics:
+    enabled: true
+    service:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8085"
+
+# ---------------- Notifications Controller ----------------
+notifications:
+  enabled: true
+  name: notifications-controller
+  resources:
+    limits: {cpu: 500m, memory: 1Gi}
+    requests: {cpu: 50m, memory: 128Mi}
+  containerSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: {drop: ["ALL"]}
+  metrics:
+    enabled: true
+    service:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9001"
+
+# ---------------- Redis ----------------
+redis:
+  enabled: true
+  name: redis
+  resources:
+    limits: {cpu: 500m, memory: 1Gi}
+    requests: {cpu: 50m, memory: 128Mi}
+  containerSecurityContext:
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: {drop: ["ALL"]}
+  volumePermissions:
+    enabled: true
+# External Redis left commented out (production)
+# externalRedis:
+#   host: redis.database.svc.cluster.local
+#   port: 6379
+#   existingSecret: argocd-redis
+#   secretPasswordKey: password
+
+# ---------------- Configs (CM/Secret/RBAC) ----------------
+configs:
+  #  Allowed admin account for test purposes, will be disabled later
+  cm:
+    accounts.admin.enabled: "true"
+  params:
+    controller.status.processors: 20
+    controller.operation.processors: 10
+    controller.self.heal.timeout.seconds: 5
+    controller.repo.server.timeout.seconds: 120
+    server.insecure: false
+    server.grpc.web: true
+    reposerver.parallelism.limit: 10
+    reposerver.exec.timeout: 120s
+    reposerver.git.modules.enabled: false
+  rbac:
+    policy.default: role:readonly
+    policy.csv: |
+      p, role:admin, applications, *, */*, allow
+      p, role:admin, certificates, *, *, allow
+      p, role:admin, clusters, *, *, allow
+      p, role:admin, repositories, *, *, allow
+      p, role:admin, logs, get, *, allow
+      p, role:admin, exec, create, */*, allow
+      g, argocd-admins, role:admin
+
+      p, role:developer, applications, get, */*, allow
+      p, role:developer, applications, sync, */*, allow
+      p, role:developer, logs, get, *, allow
+      g, argocd-developers, role:developer
+  ssh:
+    knownHosts: |
+      github.com 
+
+# Dex (OIDC) - can be enabled for SSO (disabled)
+dex:
+  enabled: false
